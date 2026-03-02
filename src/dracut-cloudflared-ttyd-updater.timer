@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily cloudflared update check for dracut-cloudflared-ttyd
+Documentation=https://github.com/tamisoft/dracut-cloudflared-ttyd
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

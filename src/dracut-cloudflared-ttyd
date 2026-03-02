@@ -1,0 +1,21 @@
+# cloudflared customizations
+# taken from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/tunnel-run-parameters/
+
+# TUNNEL_TOKEN=""
+# TUNNEL_TAG={}
+# TUNNEL_RETRIES=5
+# TUNNEL_REGION="us"
+# TUNNEL_TRANSPORT_PROTOCOL="auto"
+TUNNEL_PIDFILE="/run/cloudflared.pid"
+# TUNNEL_ORIGIN_CERT=""
+NO_AUTOUPDATE=1
+TUNNEL_METRICS=127.0.0.1:80
+# TUNNEL_LOGLEVEL=info
+TUNNEL_LOGFILE="/tmp/cloudflared.log"
+# TUNNEL_GRACE_PERIOD="30s"
+# TUNNEL_EDGE_IP_VERSION="auto"
+# TUNNEL_EDGE_BIND_ADDRESS=""
+
+# ttyd customizations
+# point your url on the tunnel to use UNIX:///run/ttyd-cf.socket
+TTYD_PARAMS="-i /run/ttyd-cf.socket --writable /usr/bin/systemd-tty-ask-password-agent"

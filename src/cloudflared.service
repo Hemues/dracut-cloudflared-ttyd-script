@@ -1,0 +1,16 @@
+[Unit]
+Description=cloudflared (Dracut)
+DefaultDependencies=no
+Wants=nm-wait-online-initrd.service
+
+[Service]
+TimeoutStartSec=0
+Type=notify
+EnvironmentFile=/etc/sysconfig/dracut-cloudflared-ttyd
+ExecStart=/usr/bin/cloudflared tunnel run
+ExecStop=/usr/bin/cloudflared tunnel stop
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=basic.target

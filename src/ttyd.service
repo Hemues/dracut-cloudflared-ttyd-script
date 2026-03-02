@@ -1,0 +1,11 @@
+[Unit]
+Description=TTYD Daemon (Dracut)
+DefaultDependencies=no
+Wants=cloudflared.service
+
+[Service]
+EnvironmentFile=/etc/sysconfig/dracut-cloudflared-ttyd
+ExecStart=/usr/bin/ttyd $TTYD_PARAMS
+
+[Install]
+WantedBy=basic.target

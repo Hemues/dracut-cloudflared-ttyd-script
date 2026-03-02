@@ -1,0 +1,2 @@
+# Placeholder, to work around a requirement in fedora's rpm %prep step accessing this file
+exit 0

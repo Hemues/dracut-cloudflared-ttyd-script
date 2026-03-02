@@ -1,0 +1,16 @@
+[Unit]
+Description=dracut-cloudflared-ttyd updater - check and update cloudflared binary
+Documentation=https://github.com/tamisoft/dracut-cloudflared-ttyd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/share/dracut-cloudflared-ttyd/dracut-cloudflared-ttyd-updater.sh
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=no
