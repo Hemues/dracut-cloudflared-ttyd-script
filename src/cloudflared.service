@@ -2,6 +2,7 @@
 Description=cloudflared (Dracut)
 DefaultDependencies=no
 Wants=nm-wait-online-initrd.service
+After=dracut-cloudflared-ttyd-net-detect.service
 
 [Service]
 TimeoutStartSec=0

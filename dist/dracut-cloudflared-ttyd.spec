@@ -43,6 +43,8 @@ Requires:       systemd
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
+Recommends:     wpa_supplicant
+Recommends:     NetworkManager-wifi
 
 %description
 This dracut module provides integration of the cloudflared and ttyd into the initram. This allow the user
@@ -68,6 +70,8 @@ install -Dm640 src/dracut-cloudflared-ttyd %{buildroot}%{_sysconfdir}/sysconfig/
 install -Dm755 src/dracut-cloudflared-ttyd-updater.sh %{buildroot}%{_datadir}/%{name}/dracut-cloudflared-ttyd-updater.sh
 install -Dm644 src/dracut-cloudflared-ttyd-updater.service %{buildroot}%{_unitdir}/dracut-cloudflared-ttyd-updater.service
 install -Dm644 src/dracut-cloudflared-ttyd-updater.timer %{buildroot}%{_unitdir}/dracut-cloudflared-ttyd-updater.timer
+install -Dm755 src/dracut-cloudflared-ttyd-net-detect.sh %{buildroot}%{dracutlibdir}/modules.d/50cloudflared-ttyd/dracut-cloudflared-ttyd-net-detect.sh
+install -Dm644 src/dracut-cloudflared-ttyd-net-detect.service %{buildroot}%{dracutlibdir}/modules.d/50cloudflared-ttyd/dracut-cloudflared-ttyd-net-detect.service
 
 %files
 %{_datadir}/%{name}/*
@@ -122,9 +126,10 @@ else
             echo "Adding rd.neednet=1 to kernel arguments..."
             grubby --update-kernel=ALL --args="rd.neednet=1"
         fi
-        if ! grep -qe "[ \"]ip=" /etc/default/grub ; then
-            echo "Adding ip=dhcp to kernel arguments, please customize if static ip/vlan/dns/gw is needed..."
-            grubby --update-kernel=ALL --args="ip=dhcp"
+        # Remove legacy ip=dhcp if present — NM profiles handle networking now
+        if grep -qe "[ \"]ip=dhcp" /etc/default/grub ; then
+            echo "Removing ip=dhcp from kernel arguments (NetworkManager profiles are used instead)..."
+            grubby --update-kernel=ALL --remove-args="ip=dhcp" || true
         fi
         echo "Done. If you'll customize /etc/default/grub, don't"
         echo "forget to run grub2-mkconfig -o /boot/grub2/grub.cfg"
@@ -152,6 +157,9 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 
 %changelog
 * Sun Mar 02 2026 GitHub Copilot - 0.0.4
+- copy host NM connection profiles into initramfs (supports DHCP, static IP, VLAN, bond, etc.)
+- remove ip=dhcp kernel parameter requirement — NetworkManager handles networking
+- add WiFi support: automatic wired/wireless network detection in initramfs
 - add daily cloudflared auto-updater service and timer
 - rebuild initramfs automatically when cloudflared is updated
 * Web Jan 22 2024 Levente Tamas <levi@tamisoft.com> - 0.0.4

@@ -76,6 +76,42 @@ cleanup_old_kernels() {
     fi
 }
 
+# Detect if the network gateway has changed since the last dracut -f.
+# module-setup.sh saves a fingerprint in /etc/dracut-cloudflared-ttyd/gateway.env
+# with the interface name, NM connection name, and type (wired/wifi) that was
+# used when the initramfs was last built.
+gateway_changed() {
+    local saved_fp="/etc/dracut-cloudflared-ttyd/gateway.env"
+    if [[ ! -f "$saved_fp" ]]; then
+        log_info "No saved gateway fingerprint found — will rebuild."
+        return 0
+    fi
+
+    # Read saved values
+    local saved_iface="" saved_conn="" saved_type=""
+    # shellcheck disable=SC1090
+    source "$saved_fp" 2>/dev/null
+    saved_iface="${GW_IFACE:-}"
+    saved_conn="${GW_CONN:-}"
+    saved_type="${GW_TYPE:-}"
+
+    # Determine current gateway
+    local cur_iface cur_type
+    cur_iface=$(ip -4 route show default 2>/dev/null | head -1 | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+    if [[ -z "$cur_iface" ]]; then
+        cur_iface=$(ip -6 route show default 2>/dev/null | head -1 | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+    fi
+    cur_type="wired"
+    [[ -n "$cur_iface" ]] && [[ -d "/sys/class/net/${cur_iface}/wireless" ]] && cur_type="wifi"
+
+    if [[ "$saved_iface" != "$cur_iface" ]] || [[ "$saved_type" != "$cur_type" ]]; then
+        log_info "Gateway changed: was ${saved_type}/${saved_iface}, now ${cur_type}/${cur_iface}"
+        return 0
+    fi
+
+    return 1
+}
+
 # Verify the binary exists
 if [[ ! -x "${CLOUDFLARED_BIN}" ]]; then
     log_error "cloudflared binary not found or not executable at ${CLOUDFLARED_BIN}"
@@ -98,8 +134,20 @@ log_info "Update command exit code: ${UPDATE_EXIT_CODE}"
 
 case ${UPDATE_EXIT_CODE} in
     0)
-        # Already up to date — nothing to do
-        log_info "cloudflared is already up to date. No initramfs rebuild needed."
+        # Already up to date — but check if network gateway changed
+        log_info "cloudflared is already up to date."
+        if gateway_changed; then
+            log_info "Network gateway has changed since last initramfs build. Rebuilding..."
+            cleanup_old_kernels
+            if dracut -f; then
+                log_info "initramfs rebuilt successfully (gateway change)."
+            else
+                log_error "dracut -f failed during gateway-change rebuild!"
+                exit 1
+            fi
+        else
+            log_info "Gateway unchanged. No initramfs rebuild needed."
+        fi
         ;;
     11)
         # Successfully updated
