@@ -188,16 +188,29 @@ sudo dracut -f
 ### What gets included in the initramfs
 
 When WiFi support is needed (either auto-detected from the default gateway, or via `WIFI_SSID`), `dracut -f` will automatically:
-- Include `wpa_supplicant` and `rfkill` binaries
-- Detect the WiFi hardware on the build host and include the correct kernel driver and firmware
+- Include `wpa_supplicant`, `rfkill`, and `iw` binaries
+- Include the **NetworkManager WiFi plugin** (`libnm-device-plugin-wifi.so`) — without this, NM treats WiFi devices as "Generic" and never connects
+- Include `wpa_supplicant` **D-Bus activation files** — NM activates wpa_supplicant via D-Bus (`fi.w1.wpa_supplicant1`)
+- Detect the WiFi hardware on the build host and include the correct kernel driver and firmware (including USB WiFi adapters with split driver architectures like `rtw88_8822bu`)
 - Include the `cfg80211`, `mac80211`, and `rfkill` kernel modules
-- Generate a NetworkManager WiFi connection profile inside the initramfs
+- **Disable MAC randomization** in the initramfs — random MACs cause `PREV_AUTH_NOT_VALID` de-authentications on many access points
+- **Set the WiFi regulatory domain** from the host — prevents 5GHz DFS channel `ASSOC-REJECT` failures
+- Generate a NetworkManager WiFi connection profile inside the initramfs (when using `WIFI_SSID`)
+
+### Boot-time WiFi hardening
+
+At boot inside the initramfs, the network detection service applies several fixes to ensure reliable WiFi connectivity:
+- **USB WiFi probe wait** — waits up to 30s for USB WiFi adapters to appear (they probe asynchronously)
+- **wpa_supplicant D-Bus readiness** — waits for wpa_supplicant to register on D-Bus before NM attempts WiFi activation
+- **NM device state check** — waits for the WiFi device to transition from `unavailable` to `disconnected` before activation
+- **Power save disabled** — disables WiFi power save after connection (USB adapters like `rtl88x2bu` drop packets in power save mode)
+- **Network sysctls** — fixes `rp_filter`, `arp_filter`, and `icmp_echo_ignore_all` for WiFi in the minimal initramfs environment
 
 ### WiFi prerequisites
 
 Install WiFi support packages:
 ```bash
-sudo dnf install wpa_supplicant NetworkManager-wifi
+sudo dnf install wpa_supplicant NetworkManager-wifi iw
 ```
 
 These are listed as `Recommends` in the RPM and will be installed by default on most Fedora systems.

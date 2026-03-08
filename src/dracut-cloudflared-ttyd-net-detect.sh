@@ -232,7 +232,7 @@ if [ "$HAS_WIFI_PROFILE" -eq 1 ]; then
     # USB WiFi adapters may not have been probed yet — wait for the interface to appear
     if [[ -z "$WIFI_IFACES" ]]; then
         log_info "WiFi profiles present but no WiFi interface yet — waiting for USB WiFi probe..."
-        local usb_wait=0
+        usb_wait=0
         while [[ $usb_wait -lt 30 ]]; do
             WIFI_IFACES=$(get_wifi_interfaces)
             [[ -n "$WIFI_IFACES" ]] && break
@@ -309,7 +309,24 @@ if [ "$HAS_WIFI_PROFILE" -eq 1 ]; then
                     iw dev "$_wif" set power_save off 2>/dev/null && \
                         log_info "Disabled power save on ${_wif}" || true
                 fi
+
+                # Fix kernel network sysctls for WiFi in the initramfs.
+                # The initramfs minimal environment may have restrictive defaults
+                # that prevent incoming ICMP (ping) from working on WiFi interfaces
+                # while outbound traffic (cloudflared) works fine.
+                if [ -d "/proc/sys/net/ipv4/conf/${_wif}" ]; then
+                    # Disable reverse path filtering (strict mode drops
+                    # packets on WiFi where the source routing doesn't match)
+                    echo 0 > "/proc/sys/net/ipv4/conf/${_wif}/rp_filter" 2>/dev/null
+                    echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null
+                    # Ensure ARP replies go out on the WiFi interface
+                    echo 0 > "/proc/sys/net/ipv4/conf/${_wif}/arp_filter" 2>/dev/null
+                    echo 0 > "/proc/sys/net/ipv4/conf/${_wif}/arp_ignore" 2>/dev/null
+                    log_info "Applied network sysctls for ${_wif}"
+                fi
             done
+            # Ensure ICMP echo is not globally disabled
+            echo 0 > /proc/sys/net/ipv4/icmp_echo_ignore_all 2>/dev/null
             _ensure_dns_ready
             exit 0
         fi
