@@ -21,30 +21,7 @@ check() {
 
 # Module dependency requirements.
 depends() {
-    local deps="systemd dbus systemd-resolved network-manager"
-
-    set -a
-    source /etc/sysconfig/dracut-cloudflared-ttyd 2>/dev/null
-    set +a
-
-    # Check if WiFi will be needed: either WIFI_SSID is set, or the default
-    # gateway is currently on a wireless interface
-    local need_wifi=0
-    if [ -n "${WIFI_SSID:-}" ]; then
-        need_wifi=1
-    else
-        local gw_iface
-        gw_iface=$(ip -4 route show default 2>/dev/null | head -1 | sed -n 's/.*dev \([^ ]*\).*/\1/p')
-        if [ -n "$gw_iface" ] && [ -d "/sys/class/net/${gw_iface}/wireless" ]; then
-            need_wifi=1
-        fi
-    fi
-
-    if [ "$need_wifi" -eq 1 ]; then
-        deps="$deps wlan"
-    fi
-
-    echo $deps
+    echo "systemd dbus systemd-resolved network-manager"
     return 0
 }
 
@@ -52,16 +29,73 @@ depends() {
 _install_wifi_deps() {
     dinfo "dracut-cloudflared-ttyd: Including WiFi support (wpa_supplicant, drivers, firmware)"
 
+    # Install NM WiFi plugin — without this NM treats WiFi devices as "Generic"
+    # and will never attempt WiFi connections
+    inst_multiple -o /usr/lib64/NetworkManager/*/libnm-device-plugin-wifi.so
+
     # Install wpa_supplicant and related binaries
     inst_multiple -o \
         /usr/sbin/wpa_supplicant \
         /usr/bin/wpa_cli \
-        /usr/sbin/rfkill
+        /usr/sbin/rfkill \
+        /usr/sbin/iw
 
     # Install wpa_supplicant systemd service if present
     inst_multiple -o \
         "${systemdsystemunitdir}/wpa_supplicant.service" \
         "${systemdsystemunitdir}/wpa_supplicant@.service"
+
+    # Install wpa_supplicant D-Bus activation file and policy — NM activates
+    # wpa_supplicant via D-Bus (fi.w1.wpa_supplicant1). Without these files
+    # NM fails with "Failed to D-Bus activate wpa_supplicant service".
+    inst_multiple -o \
+        /usr/share/dbus-1/system-services/fi.w1.wpa_supplicant1.service \
+        /etc/dbus-1/system.d/wpa_supplicant.conf \
+        /usr/share/dbus-1/system.d/wpa_supplicant.conf
+
+    # Ensure wpa_supplicant is started by NM when needed
+    if [ -e "${systemdsystemunitdir}/wpa_supplicant.service" ]; then
+        mkdir -p "${initdir}${systemdsystemunitdir}/wpa_supplicant.service.d"
+        cat > "${initdir}${systemdsystemunitdir}/wpa_supplicant.service.d/initrd.conf" <<'SVCEOF'
+[Unit]
+DefaultDependencies=no
+After=dbus.service dbus.socket
+Before=NetworkManager.service
+
+[Install]
+WantedBy=sysinit.target
+SVCEOF
+        $SYSTEMCTL -q --root "$initdir" enable wpa_supplicant.service 2>/dev/null || true
+    fi
+
+    # Disable MAC randomization in the initramfs — random MACs cause
+    # PREV_AUTH_NOT_VALID deauths on many access points.
+    local nm_conf_dir="${initdir}/etc/NetworkManager/conf.d"
+    mkdir -p "$nm_conf_dir"
+    cat > "${nm_conf_dir}/dracut-wifi-stable-mac.conf" <<'NMCONF'
+[device]
+wifi.scan-rand-mac-address=no
+
+[connection]
+wifi.cloned-mac-address=permanent
+NMCONF
+    dinfo "dracut-cloudflared-ttyd: Disabled WiFi MAC randomization in initramfs"
+
+    # Set the WiFi regulatory domain — without this it defaults to WORLD which
+    # blocks many 5GHz DFS channels, causing ASSOC-REJECT on those frequencies.
+    local regdom
+    regdom=$(iw reg get 2>/dev/null | sed -n 's/^country \([A-Z][A-Z]\):.*/\1/p' | sed -n '1p')
+    if [ -z "$regdom" ]; then
+        # Fallback: try to get from timezone-based config
+        regdom=$(sed -n 's/^WIRELESS_REGDOM="\?\([A-Z][A-Z]\)"\?/\1/p' /etc/sysconfig/regdomain 2>/dev/null || true)
+    fi
+    if [ -n "$regdom" ] && [ "$regdom" != "00" ]; then
+        dinfo "dracut-cloudflared-ttyd: Setting WiFi regulatory domain to '${regdom}'"
+        mkdir -p "${initdir}/etc/modprobe.d"
+        echo "options cfg80211 ieee80211_regdom=${regdom}" > "${initdir}/etc/modprobe.d/dracut-wifi-regdom.conf"
+        # Also install CRDA/iw-based regdomain setting
+        inst_multiple -o /usr/sbin/iw /usr/bin/iw
+    fi
 
     # Install WiFi kernel modules: generic wireless stack
     instmods cfg80211 mac80211 rfkill
@@ -78,14 +112,32 @@ _install_wifi_deps() {
             instmods "$wifi_driver"
         fi
 
-        # Include firmware referenced by the WiFi device via modinfo
+        # Include firmware referenced by the WiFi driver AND all its dependency modules.
+        # USB WiFi drivers (e.g. rtw88_8822bu) are split: the bus-glue module may not
+        # list firmware, but the chip-specific module (e.g. rtw88_8822b) does.
         if [ -n "$wifi_driver" ]; then
-            local fw_file
-            for fw_file in $(modinfo -F firmware "$wifi_driver" 2>/dev/null); do
-                if [ -e "/lib/firmware/${fw_file}" ]; then
-                    inst_simple "/lib/firmware/${fw_file}"
-                    dinfo "dracut-cloudflared-ttyd: Including firmware '${fw_file}'"
-                fi
+            local fw_file dep_mod
+            # Collect firmware from the driver itself and all its dependencies
+            local all_mods="$wifi_driver"
+            local dep_mods
+            dep_mods=$(modinfo -F depends "$wifi_driver" 2>/dev/null | tr ',' ' ')
+            if [ -n "$dep_mods" ]; then
+                all_mods="$wifi_driver $dep_mods"
+                # Also check second-level dependencies (e.g. rtw88_8822b -> rtw88_core)
+                for dep_mod in $dep_mods; do
+                    local dep2
+                    dep2=$(modinfo -F depends "$dep_mod" 2>/dev/null | tr ',' ' ')
+                    [ -n "$dep2" ] && all_mods="$all_mods $dep2"
+                done
+            fi
+            dinfo "dracut-cloudflared-ttyd: Checking firmware for modules: ${all_mods}"
+            for dep_mod in $all_mods; do
+                for fw_file in $(modinfo -F firmware "$dep_mod" 2>/dev/null); do
+                    if [ -e "/lib/firmware/${fw_file}" ]; then
+                        inst_simple "/lib/firmware/${fw_file}"
+                        dinfo "dracut-cloudflared-ttyd: Including firmware '${fw_file}' (from ${dep_mod})"
+                    fi
+                done
             done
         fi
     done
@@ -105,6 +157,7 @@ install() {
     inst_simple "$moddir/ttyd.service" "${systemdsystemunitdir}"/ttyd.service
 
     $SYSTEMCTL -q --root "$initdir" add-wants cryptsetup.target ttyd.service
+    $SYSTEMCTL -q --root "$initdir" add-wants cryptsetup.target cloudflared.service
 
     mkdir -p "$initdir/etc/sysconfig"
     inst /etc/sysconfig/dracut-cloudflared-ttyd
@@ -218,21 +271,54 @@ install() {
                         done
                     fi
 
-                    # Step 5: If VLAN, copy the parent interface profile
+                    # Step 5: If VLAN, copy the parent interface profile and include VLAN kernel module
                     if [[ "$conn_type" == "vlan" ]]; then
-                        local parent_iface
-                        parent_iface=$(grep '^parent=' "$gw_profile_file" 2>/dev/null | head -1 | cut -d= -f2)
-                        if [ -n "$parent_iface" ]; then
+                        dinfo "dracut-cloudflared-ttyd: Connection is type 'vlan', including 8021q kernel module"
+                        instmods 8021q
+
+                        local vlan_parent
+                        vlan_parent=$(grep '^parent=' "$gw_profile_file" 2>/dev/null | head -1 | cut -d= -f2)
+                        if [ -n "$vlan_parent" ]; then
+                            dinfo "dracut-cloudflared-ttyd: VLAN parent reference: '${vlan_parent}'"
+                            local parent_found=0
                             for profile in "${nm_sys_conn_dir}"/*.nmconnection; do
                                 [ -e "$profile" ] || continue
-                                if grep -q "^interface-name=${parent_iface}$" "$profile" 2>/dev/null; then
+                                # parent can be an interface name or a connection UUID
+                                if grep -q "^interface-name=${vlan_parent}$" "$profile" 2>/dev/null || \
+                                   grep -q "^uuid=${vlan_parent}$" "$profile" 2>/dev/null; then
                                     local pname
                                     pname=$(basename "$profile")
                                     inst_simple "$profile" "${nm_sys_conn_dir}/${pname}"
                                     dinfo "dracut-cloudflared-ttyd: Copied VLAN parent profile '${pname}'"
+                                    parent_found=1
+
+                                    # If the parent itself is a bond/bridge/team, also copy its member profiles
+                                    local parent_conn_type
+                                    parent_conn_type=$(grep '^type=' "$profile" 2>/dev/null | head -1 | cut -d= -f2)
+                                    if [[ "$parent_conn_type" == "bond" || "$parent_conn_type" == "bridge" || "$parent_conn_type" == "team" ]]; then
+                                        local parent_conn_id parent_if_name
+                                        parent_conn_id=$(grep '^id=' "$profile" 2>/dev/null | head -1 | cut -d= -f2)
+                                        parent_if_name=$(grep '^interface-name=' "$profile" 2>/dev/null | head -1 | cut -d= -f2)
+                                        dinfo "dracut-cloudflared-ttyd: VLAN parent is type '${parent_conn_type}', looking for member profiles..."
+                                        local member_profile member_name
+                                        for member_profile in "${nm_sys_conn_dir}"/*.nmconnection; do
+                                            [ -e "$member_profile" ] || continue
+                                            if grep -qE "^(master|controller)=${parent_conn_id}$" "$member_profile" 2>/dev/null || \
+                                               { [ -n "$parent_if_name" ] && grep -qE "^(master|controller)=${parent_if_name}$" "$member_profile" 2>/dev/null; }; then
+                                                member_name=$(basename "$member_profile")
+                                                inst_simple "$member_profile" "${nm_sys_conn_dir}/${member_name}"
+                                                dinfo "dracut-cloudflared-ttyd: Copied VLAN parent's member profile '${member_name}'"
+                                            fi
+                                        done
+                                    fi
                                     break
                                 fi
                             done
+                            if [ "$parent_found" -eq 0 ]; then
+                                dwarn "dracut-cloudflared-ttyd: Could not find parent profile for VLAN parent '${vlan_parent}'"
+                            fi
+                        else
+                            dwarn "dracut-cloudflared-ttyd: VLAN profile has no parent= field"
                         fi
                     fi
                 else
@@ -310,7 +396,7 @@ NMWIFI
     # multi-NIC default gateway selection at boot time
     inst_simple "$moddir/dracut-cloudflared-ttyd-net-detect.sh" /usr/bin/dracut-cloudflared-ttyd-net-detect.sh
     inst_simple "$moddir/dracut-cloudflared-ttyd-net-detect.service" "${systemdsystemunitdir}"/dracut-cloudflared-ttyd-net-detect.service
-    $SYSTEMCTL -q --root "$initdir" add-wants basic.target dracut-cloudflared-ttyd-net-detect.service
+    $SYSTEMCTL -q --root "$initdir" add-wants cryptsetup.target dracut-cloudflared-ttyd-net-detect.service
 
     # ---- Save a gateway fingerprint so the updater can detect network changes ----
     local fingerprint_dir="${initdir}/etc/dracut-cloudflared-ttyd"

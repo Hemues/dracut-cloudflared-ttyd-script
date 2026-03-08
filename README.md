@@ -8,10 +8,24 @@ Building this package will fetch the latest version of cloudflared and ttyd bina
 This allow the user to answer encrypted disk password prompts remotely from a web browser.
 
 ### Build the rpm
-- install build dependencies: `sudo dnf install wget dnf-plugin-builddep rpm-build`
-- `sudo dnf builddep dracut-cloudflared-ttyd.spec`
-- `rpmbuild -bp dracut-cloudflared-ttyd.spec`
-- `rpmbuild -ba --define '_auto_tool_versions 1' dracut-cloudflared-ttyd.spec`
+
+1. Install build dependencies:
+   ```bash
+   sudo dnf install wget dnf-plugin-builddep rpm-build
+   sudo dnf builddep dist/dracut-cloudflared-ttyd.spec
+   ```
+
+2. Build directly from the local source tree:
+   ```bash
+   cd /path/to/dracut-cloudflared-ttyd
+   rpmbuild -ba dist/dracut-cloudflared-ttyd.spec
+   ```
+   The spec automatically creates the source tarball from the local repo during `%prep`. The `ttyd` and `cloudflared` binaries are downloaded from GitHub if not already present in `~/rpmbuild/SOURCES/`.
+
+   > **Note:** If a tarball already exists in `~/rpmbuild/SOURCES/`, it is reused as-is. Delete it to force a fresh build from local source:
+   > ```bash
+   > rm -f ~/rpmbuild/SOURCES/dracut-cloudflared-ttyd-*.tar.gz
+   > ```
 
 ### Install the rpm
 - `sudo dnf install ~/rpmbuild/RPMS/x86_64/dracut-cloudflared-ttyd*`

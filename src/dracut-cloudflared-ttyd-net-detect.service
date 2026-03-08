@@ -2,7 +2,7 @@
 Description=Network detection for dracut-cloudflared-ttyd (wired vs WiFi)
 DefaultDependencies=no
 After=NetworkManager.service
-Before=nm-wait-online-initrd.service
+Before=nm-wait-online-initrd.service cloudflared.service cryptsetup.target
 Wants=NetworkManager.service
 
 [Service]
@@ -11,4 +11,4 @@ RemainAfterExit=yes
 ExecStart=/usr/bin/dracut-cloudflared-ttyd-net-detect.sh
 
 [Install]
-WantedBy=basic.target
+WantedBy=cryptsetup.target

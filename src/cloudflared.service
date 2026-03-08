@@ -1,17 +1,52 @@
 [Unit]
 Description=cloudflared (Dracut)
 DefaultDependencies=no
-Wants=nm-wait-online-initrd.service
+Wants=nm-wait-online-initrd.service dracut-cloudflared-ttyd-net-detect.service
 After=dracut-cloudflared-ttyd-net-detect.service
+Before=cryptsetup.target
 
 [Service]
 TimeoutStartSec=0
 Type=notify
 EnvironmentFile=/etc/sysconfig/dracut-cloudflared-ttyd
+
+# Fix DNS when systemd-resolved stub (127.0.0.53) has no upstream servers.
+# '-' prefix: failure does not block cloudflared startup.
+ExecStartPre=-/bin/sh -c '\
+    ok() { grep -q "^nameserver" /etc/resolv.conf 2>/dev/null && \
+           ! grep -q "nameserver 127.0.0.53" /etc/resolv.conf 2>/dev/null; }; \
+    ok && exit 0; \
+    if [ -f /run/NetworkManager/resolv.conf ]; then \
+        cp /run/NetworkManager/resolv.conf /etc/resolv.conf 2>/dev/null; \
+        ok && exit 0; \
+    fi; \
+    if command -v nmcli >/dev/null 2>&1; then \
+        ns=$(nmcli -t -f IP4.DNS device show 2>/dev/null | \
+             sed -n "s/^IP4\\.DNS\\[.*\\]://p" | sed -n "1,3p"); \
+        if [ -n "$ns" ]; then \
+            : > /etc/resolv.conf; \
+            echo "$ns" | while read -r s; do \
+                [ -n "$s" ] && echo "nameserver $s" >> /etc/resolv.conf; \
+            done; \
+            ok && exit 0; \
+        fi; \
+    fi; \
+    for p in /etc/NetworkManager/system-connections/*.nmconnection; do \
+        [ -e "$p" ] || continue; \
+        d=$(grep "^dns=" "$p" 2>/dev/null | sed -n '1p' | cut -d= -f2); \
+        if [ -n "$d" ]; then \
+            : > /etc/resolv.conf; \
+            IFS=";"; for s in $d; do [ -n "$s" ] && echo "nameserver $s" >> /etc/resolv.conf; done; \
+            exit 0; \
+        fi; \
+    done; \
+    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf; \
+'
+
 ExecStart=/usr/bin/cloudflared tunnel run
 ExecStop=/usr/bin/cloudflared tunnel stop
 Restart=on-failure
 RestartSec=5s
 
 [Install]
-WantedBy=basic.target
+WantedBy=cryptsetup.target
