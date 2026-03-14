@@ -192,8 +192,10 @@ When WiFi support is needed (either auto-detected from the default gateway, or v
 - Include the **NetworkManager WiFi plugin** (`libnm-device-plugin-wifi.so`) — without this, NM treats WiFi devices as "Generic" and never connects
 - Include `wpa_supplicant` **D-Bus activation files** — NM activates wpa_supplicant via D-Bus (`fi.w1.wpa_supplicant1`)
 - Detect the WiFi hardware on the build host and include the correct kernel driver and firmware (including USB WiFi adapters with split driver architectures like `rtw88_8822bu`)
+- **Include reverse-dependency modules** — drivers with split architectures (e.g., Intel `iwlwifi` + `iwlmvm`) are fully resolved via `modules.dep`. Without this, the bus driver loads but no WiFi interface appears.
 - Include the `cfg80211`, `mac80211`, and `rfkill` kernel modules
 - **Disable MAC randomization** in the initramfs — random MACs cause `PREV_AUTH_NOT_VALID` de-authentications on many access points
+- **Stabilize host WiFi MAC** — sets `cloned-mac-address=permanent` on the host's WiFi profile during `dracut -f`, so the DHCP server assigns the same IP address in both the initramfs and the real OS
 - **Set the WiFi regulatory domain** from the host — prevents 5GHz DFS channel `ASSOC-REJECT` failures
 - Generate a NetworkManager WiFi connection profile inside the initramfs (when using `WIFI_SSID`)
 

@@ -110,19 +110,41 @@ NMCONF
         if [ -n "$wifi_driver" ]; then
             dinfo "dracut-cloudflared-ttyd: Including WiFi driver '${wifi_driver}' for interface '${ifname}'"
             instmods "$wifi_driver"
+
+            # Include modules that load ON TOP of the WiFi driver (reverse deps).
+            # Intel WiFi uses a split architecture: iwlwifi (PCI bus driver) +
+            # iwlmvm (op-mode that creates the actual wlpXsY interface).
+            # instmods only follows forward dependencies, so iwlmvm is missed.
+            # Without it, iwlwifi detects hardware but no interface appears.
+            #
+            # We parse the kernel's modules.dep (not lsmod) so this works even
+            # when the reverse-dep module is not currently loaded (e.g. broken
+            # initramfs being rebuilt, or cross-kernel dracut --kver).
+            local _rdep _rdeps="" _moddep
+            _moddep="/lib/modules/${kernel}/modules.dep"
+            if [ -f "$_moddep" ]; then
+                while IFS= read -r _rdep; do
+                    [ -z "$_rdep" ] && continue
+                    dinfo "dracut-cloudflared-ttyd: Including WiFi reverse-dep '${_rdep}' (uses ${wifi_driver})"
+                    instmods "$_rdep"
+                    _rdeps="$_rdeps $_rdep"
+                done < <(grep ":.*[/ ]${wifi_driver}\.ko" "$_moddep" | \
+                         sed 's/:.*//; s|.*/||; s/\.ko\(\.xz\|\.gz\|\.zst\)\?$//')
+            fi
         fi
 
-        # Include firmware referenced by the WiFi driver AND all its dependency modules.
+        # Include firmware referenced by the WiFi driver, its reverse deps,
+        # AND all their dependency modules.
         # USB WiFi drivers (e.g. rtw88_8822bu) are split: the bus-glue module may not
         # list firmware, but the chip-specific module (e.g. rtw88_8822b) does.
         if [ -n "$wifi_driver" ]; then
             local fw_file dep_mod
-            # Collect firmware from the driver itself and all its dependencies
-            local all_mods="$wifi_driver"
+            # Collect firmware from the driver, its reverse deps, and all their dependencies
+            local all_mods="$wifi_driver $_rdeps"
             local dep_mods
             dep_mods=$(modinfo -F depends "$wifi_driver" 2>/dev/null | tr ',' ' ')
             if [ -n "$dep_mods" ]; then
-                all_mods="$wifi_driver $dep_mods"
+                all_mods="$all_mods $dep_mods"
                 # Also check second-level dependencies (e.g. rtw88_8822b -> rtw88_core)
                 for dep_mod in $dep_mods; do
                     local dep2
@@ -130,6 +152,12 @@ NMCONF
                     [ -n "$dep2" ] && all_mods="$all_mods $dep2"
                 done
             fi
+            # Also scan dependencies of reverse-dep modules (e.g. iwlmvm -> mac80211)
+            for dep_mod in $_rdeps; do
+                local rdep_deps
+                rdep_deps=$(modinfo -F depends "$dep_mod" 2>/dev/null | tr ',' ' ')
+                [ -n "$rdep_deps" ] && all_mods="$all_mods $rdep_deps"
+            done
             dinfo "dracut-cloudflared-ttyd: Checking firmware for modules: ${all_mods}"
             for dep_mod in $all_mods; do
                 for fw_file in $(modinfo -F firmware "$dep_mod" 2>/dev/null); do
@@ -389,6 +417,37 @@ NMWIFI
     # ---- Include WiFi dependencies if any WiFi profile will be in the initramfs ----
     if [ "$wifi_needed" -eq 1 ]; then
         _install_wifi_deps
+
+        # ---- Stabilize the host WiFi MAC to match initramfs ----
+        # The initramfs uses cloned-mac-address=permanent (dracut-wifi-stable-mac.conf)
+        # to prevent PREV_AUTH_NOT_VALID deauths. If the host's WiFi profile uses a
+        # randomized MAC (Fedora default), the DHCP server sees two different clients
+        # and assigns different IPs for initramfs vs real OS.
+        # Fix: set cloned-mac-address=permanent on the host WiFi profile(s) that are
+        # included in the initramfs, so both environments present the same MAC.
+        local _wifi_prof _wifi_id _cur_mac
+        for _wifi_prof in "${nm_sys_conn_dir}"/*.nmconnection; do
+            [ -e "$_wifi_prof" ] || continue
+            grep -q '^type=wifi' "$_wifi_prof" 2>/dev/null || continue
+            # Only update profiles that were copied into the initramfs
+            [ -e "${nm_initrd_dir}/$(basename "$_wifi_prof")" ] || continue
+            _wifi_id=$(sed -n 's/^id=//p' "$_wifi_prof" 2>/dev/null | sed -n '1p')
+            if [ -n "$_wifi_id" ]; then
+                _cur_mac=$(nmcli -g 802-11-wireless.cloned-mac-address connection show "$_wifi_id" 2>/dev/null)
+                if [ "$_cur_mac" != "permanent" ]; then
+                    dinfo "dracut-cloudflared-ttyd: Setting cloned-mac-address=permanent on host WiFi profile '${_wifi_id}' (was '${_cur_mac:-default/random}')"
+                    nmcli connection modify "$_wifi_id" wifi.cloned-mac-address permanent 2>/dev/null || true
+                fi
+            fi
+        done
+        # Also ensure the WIFI_SSID-based profile on the host uses stable MAC
+        if [ -n "${WIFI_SSID:-}" ]; then
+            _cur_mac=$(nmcli -g 802-11-wireless.cloned-mac-address connection show "$WIFI_SSID" 2>/dev/null || true)
+            if [ -n "$_cur_mac" ] && [ "$_cur_mac" != "permanent" ]; then
+                dinfo "dracut-cloudflared-ttyd: Setting cloned-mac-address=permanent on host WiFi '${WIFI_SSID}'"
+                nmcli connection modify "$WIFI_SSID" wifi.cloned-mac-address permanent 2>/dev/null || true
+            fi
+        fi
     fi
 
     # ---- Always install the network detection script and service ----

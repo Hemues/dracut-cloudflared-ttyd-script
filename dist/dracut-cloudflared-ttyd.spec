@@ -212,13 +212,17 @@ fi
 systemctl daemon-reload >/dev/null 2>&1 || true
 
 %changelog
-* Sun Mar 08 2026 Levente Tamas <levi@tamisoft.com> - 0.0.4
+* Sun Mar 09 2026 Levente Tamas <levi@tamisoft.com> - 0.0.4
 - copy host NM connection profiles into initramfs (DHCP, static IP, VLAN, bond, bridge, WiFi)
 - automatic network detection: wired/WiFi fallback, VLAN parent resolution by UUID
 - DNS fallback when systemd-resolved is not ready in initramfs
 - daily cloudflared auto-updater service and timer with gateway change detection
 - remove ip=dhcp kernel argument requirement (NetworkManager profiles handle networking)
 - RPM spec: auto-detect repo root for tarball creation
+- fix WiFi driver inclusion: include reverse-dependency modules (e.g. iwlmvm for Intel)
+  via modules.dep parsing, preventing missing WiFi interface in initramfs
+- stabilize WiFi MAC address: set cloned-mac-address=permanent on host WiFi profiles
+  to ensure DHCP assigns the same IP in initramfs and real OS
 
 * Thu Dec 26 2024 Levente Tamas <levi@tamisoft.com> - 0.0.3
 - disable rpm debug_package
