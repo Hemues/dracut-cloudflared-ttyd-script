@@ -15,6 +15,7 @@ Entries marked ✅ are verified in production. Entries marked ⏳ are pending ve
 4. [RPM/Dracut Module Integration](#4--rpmdracut-module-integration)
 5. [Binary Fetch at Build Time vs Runtime](#5--binary-fetch-at-build-time-vs-runtime)
 6. [Fedora 44 Upgrade Breaks WiFi in Initramfs](#6--fedora-44-upgrade-breaks-wifi-in-initramfs)
+7. [Fedora 44 Kernel LVM Activation Regression After Switch-Root](#7--fedora-44-kernel-lvm-activation-regression-after-switch-root)
 
 ---
 
@@ -184,3 +185,51 @@ the initramfs.
 - The daily updater timer eventually rebuilds the initramfs correctly (when the
   host is fully booted with WiFi), but the damage is done on first reboot after
   the kernel upgrade.
+
+---
+
+## #7 — Fedora 44 Kernel LVM Activation Regression After Switch-Root
+
+**Status:** ✅ VERIFIED (2026-05-20, kernel 7.0.9-202.fc44)
+
+**Symptom:**
+After booting with F44 kernels (7.0.8-200.fc44, 7.0.9-202.fc44), the system
+gets stuck indefinitely waiting for LVM logical volumes (e.g.,
+`dev-disk-by\x2duuid-6f5ac11c...`) after switch_root. The LUKS volume IS
+unlocked and the root LV mounts, but secondary LVs (`var_loglv`, `varlv`,
+`homelv`, `datalv`) never appear. The fstab uses `x-systemd.device-timeout=0`
+(wait forever), so the system hangs.
+
+The OLD kernel (7.0.8-100.fc43) boots fine with the exact same cmdline.
+
+**Root Cause:**
+The kernel cmdline only specified `rd.lvm.lv=rootvg/rootlv` and
+`rd.lvm.lv=rootvg/swaplv`, telling dracut to activate ONLY those two LVs in
+the initrd. After switch_root, the real system's LVM activation services
+(lvm2-monitor, udev rules) are responsible for activating remaining LVs.
+
+On the fc43 kernel this post-switch_root activation worked correctly. On fc44
+kernels (7.0.8-200, 7.0.9-202), a regression in the kernel's device-mapper or
+udev event handling prevents secondary LV activation after switch_root.
+
+**Fix:**
+Added `rd.lvm.vg=rootvg` to the kernel cmdline via grubby:
+```bash
+grubby --update-kernel=ALL --args='rd.lvm.vg=rootvg'
+```
+
+This tells dracut to activate the ENTIRE volume group (all LVs) during the
+initrd phase, before switch_root. Since all LV device nodes already exist when
+the real systemd takes over, the post-switch_root activation bug is bypassed.
+
+**Key Lessons:**
+- `rd.lvm.lv=VG/LV` activates only specific LVs in the initrd. If
+  post-switch_root LVM activation is broken (kernel regression), secondary LVs
+  won't appear and the system hangs on fstab mounts.
+- `rd.lvm.vg=VG` activates the entire VG in the initrd — safer for systems
+  with multiple LVs from the same VG on LUKS.
+- `x-systemd.device-timeout=0` (infinite wait) makes LVM activation failures
+  look like a hung boot with no error message. Consider using a finite timeout
+  (e.g., 90s) with `nofail` for non-critical mounts.
+- Failed boots with new kernels may not persist journal entries if /var/log is
+  on a separate LV that itself failed to activate.
