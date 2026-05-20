@@ -220,13 +220,26 @@ install() {
         fi
 
         if [ -z "$gw_iface" ]; then
-            dwarn "dracut-cloudflared-ttyd: No default gateway interface found, copying all wired profiles as fallback"
+            dwarn "dracut-cloudflared-ttyd: No default gateway interface found, copying all profiles as fallback"
+            # Check if WiFi hardware is present — if so, include WiFi profiles too
+            local has_wifi_hw=0
+            for _wif in /sys/class/net/*/wireless; do
+                [ -e "$_wif" ] && has_wifi_hw=1 && break
+            done
             local profile count=0
             for profile in "${nm_sys_conn_dir}"/*.nmconnection; do
                 [ -e "$profile" ] || continue
                 local prof_name
                 prof_name=$(basename "$profile")
-                grep -q '^type=wifi' "$profile" 2>/dev/null && continue
+                if grep -q '^type=wifi' "$profile" 2>/dev/null; then
+                    if [ "$has_wifi_hw" -eq 1 ]; then
+                        inst_simple "$profile" "${nm_sys_conn_dir}/${prof_name}"
+                        wifi_needed=1
+                        count=$((count + 1))
+                        dinfo "dracut-cloudflared-ttyd: Fallback — including WiFi profile '${prof_name}' (WiFi hardware present)"
+                    fi
+                    continue
+                fi
                 inst_simple "$profile" "${nm_sys_conn_dir}/${prof_name}"
                 count=$((count + 1))
             done
@@ -245,9 +258,17 @@ install() {
                     [ -e "$profile" ] || continue
                     local prof_name
                     prof_name=$(basename "$profile")
-                    # In fallback, skip WiFi unless gateway IS WiFi
+                    # In fallback, skip WiFi unless gateway IS WiFi or WiFi hardware is present
                     if [ "$gw_is_wifi" -eq 0 ] && grep -q '^type=wifi' "$profile" 2>/dev/null; then
-                        continue
+                        # Still include WiFi if hardware is present (for WiFi-only hosts)
+                        local _has_wifi_hw=0
+                        for _wif in /sys/class/net/*/wireless; do
+                            [ -e "$_wif" ] && _has_wifi_hw=1 && break
+                        done
+                        if [ "$_has_wifi_hw" -eq 0 ]; then
+                            continue
+                        fi
+                        wifi_needed=1
                     fi
                     inst_simple "$profile" "${nm_sys_conn_dir}/${prof_name}"
                 done
@@ -354,7 +375,15 @@ install() {
                     for profile in "${nm_sys_conn_dir}"/*.nmconnection; do
                         [ -e "$profile" ] || continue
                         if [ "$gw_is_wifi" -eq 0 ] && grep -q '^type=wifi' "$profile" 2>/dev/null; then
-                            continue
+                            # Still include WiFi if hardware is present
+                            local _has_wifi_hw=0
+                            for _wif in /sys/class/net/*/wireless; do
+                                [ -e "$_wif" ] && _has_wifi_hw=1 && break
+                            done
+                            if [ "$_has_wifi_hw" -eq 0 ]; then
+                                continue
+                            fi
+                            wifi_needed=1
                         fi
                         inst_simple "$profile" "${nm_sys_conn_dir}/$(basename "$profile")"
                     done

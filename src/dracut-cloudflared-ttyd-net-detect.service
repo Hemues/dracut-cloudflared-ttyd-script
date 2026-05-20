@@ -1,9 +1,9 @@
 [Unit]
 Description=Network detection for dracut-cloudflared-ttyd (wired vs WiFi)
 DefaultDependencies=no
-After=NetworkManager.service
+After=nm-initrd.service NetworkManager-initrd.service
 Before=nm-wait-online-initrd.service cloudflared.service cryptsetup.target
-Wants=NetworkManager.service
+Wants=nm-initrd.service
 
 [Service]
 Type=oneshot

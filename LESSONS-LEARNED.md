@@ -14,6 +14,7 @@ Entries marked ✅ are verified in production. Entries marked ⏳ are pending ve
 3. [Initramfs Sysctl Hardening Breaks Networking](#3--initramfs-sysctl-hardening-breaks-networking)
 4. [RPM/Dracut Module Integration](#4--rpmdracut-module-integration)
 5. [Binary Fetch at Build Time vs Runtime](#5--binary-fetch-at-build-time-vs-runtime)
+6. [Fedora 44 Upgrade Breaks WiFi in Initramfs](#6--fedora-44-upgrade-breaks-wifi-in-initramfs)
 
 ---
 
@@ -132,3 +133,54 @@ being generated.
 **Key Lesson:** Always validate that critical binaries are present in the
 initramfs after build. Check the image size — a too-small image means
 something was silently dropped.
+
+---
+
+## #6 — Fedora 44 Upgrade Breaks WiFi in Initramfs
+
+**Status:** ✅ VERIFIED (2026-05-20)
+
+**Symptom:**
+After in-place upgrade from Fedora 43 to 44, the cloudflared tunnel fails to
+establish in the initramfs on WiFi-only hosts. Wired hosts are unaffected.
+The net-detect journal shows only wired profiles (e.g., `enp0s25.nmconnection`,
+`lo.nmconnection`) with `wifi=0` — the WiFi profile is completely missing from
+the initramfs.
+
+**Root Cause (two issues):**
+
+1. **WiFi profile excluded during upgrade rebuild:** When the F44 kernel is
+   installed during the upgrade, dracut runs automatically to build the new
+   kernel's initramfs. At that moment, NetworkManager is momentarily restarting
+   (no default gateway). The `module-setup.sh` fallback path (triggered when
+   `gw_iface` is empty) copied all profiles EXCEPT WiFi ones — by design it
+   skipped `type=wifi` profiles in the fallback. On a WiFi-only host, this
+   resulted in an initramfs with zero WiFi connectivity.
+
+2. **Broken systemd service ordering:** The `net-detect.service` had
+   `After=NetworkManager.service` and `Wants=NetworkManager.service`. However, in
+   the initramfs the NM service is called `nm-initrd.service` (not
+   `NetworkManager.service`). Systemd silently ignores ordering dependencies on
+   non-existent units, so net-detect started without waiting for NM.
+
+**Fix:**
+
+1. Modified all fallback paths in `module-setup.sh` to include WiFi profiles
+   when WiFi hardware is present on the host (`/sys/class/net/*/wireless`
+   exists), regardless of whether a default gateway is currently active. This
+   ensures WiFi profiles are always baked in on machines with WiFi hardware.
+
+2. Updated `dracut-cloudflared-ttyd-net-detect.service` to use
+   `After=nm-initrd.service NetworkManager-initrd.service` and
+   `Wants=nm-initrd.service` — the correct service names used inside the
+   initramfs.
+
+**Key Lessons:**
+- Never assume network is stable during dracut builds triggered by package
+  install/upgrade. NM may be restarting → no default gateway → fallback logic.
+- In the initramfs, NM runs as `nm-initrd.service`, NOT `NetworkManager.service`.
+  Always verify systemd service names match what actually exists inside the
+  initramfs (use `lsinitrd | grep service`).
+- The daily updater timer eventually rebuilds the initramfs correctly (when the
+  host is fully booted with WiFi), but the damage is done on first reboot after
+  the kernel upgrade.
